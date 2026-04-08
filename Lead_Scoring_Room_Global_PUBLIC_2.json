@@ -1,0 +1,842 @@
+{
+  "name": "Lead Scoring Room (Global)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "lead-scoring-global",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "d5234ffa-127a-4f5a-98dc-f55b4372f228",
+      "name": "Webhook — New Lead",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -2000,
+        128
+      ],
+      "webhookId": "lead-scoring-global-v2"
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.first().json.body || $input.first().json;\n\nconst lead = {\n  name:         raw.name || raw.full_name || raw.contact_name || (raw.firstname ? raw.firstname + ' ' + (raw.lastname || '') : '') || 'Unknown',\n  email:        raw.email || raw.email_address || raw.contact_email || '',\n  phone:        raw.phone || raw.phone_number || raw.tel || '',\n  company:      raw.company || raw.company_name || raw.organization || raw.account || '',\n  position:     raw.position || raw.role || raw.title || raw.job_title || '',\n  company_size: raw.company_size || raw.employees || raw.num_employees || raw.headcount || '',\n  industry:     raw.industry || raw.sector || raw.vertical || '',\n  behavior:     raw.behavior || raw.intent || raw.message || raw.notes || raw.description || raw.comment || '',\n  source:       raw.source || raw.lead_source || raw.utm_source || raw.channel || 'webhook',\n  icp_match:    raw.icp_match !== undefined ? raw.icp_match : null,\n  website:      raw.website || raw.url || raw.domain || '',\n  country:      raw.country || raw.location || 'US',\n  budget:       raw.budget || raw.budget_range || ''\n};\n\nif (!lead.email && !lead.name && !lead.company) {\n  throw new Error('Lead must have at least an email, name, or company name.');\n}\n\nreturn lead;"
+      },
+      "id": "682ed8da-90c7-4500-a6e2-0b1b60856d2c",
+      "name": "Normalize Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1808,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const lead = $input.first().json;\n\n// ── 1. POSITION (0–25pts) ──\nconst pos = (lead.position || '').toLowerCase();\nlet scorePosition = 8;\nif (/\\b(ceo|owner|founder|co-founder|president|managing director|md\\b|general manager|gm\\b)/.test(pos)) scorePosition = 25;\nelse if (/\\b(coo|cto|cfo|cmo|cso|vp\\b|vice president|director|svp|evp)/.test(pos)) scorePosition = 22;\nelse if (/\\b(head of|chief|principal|partner)/.test(pos)) scorePosition = 18;\nelse if (/\\b(manager|lead\\b|team lead|supervisor)/.test(pos)) scorePosition = 13;\nelse if (/\\b(senior|specialist|coordinator|consultant|advisor)/.test(pos)) scorePosition = 8;\nelse if (/\\b(junior|analyst|assistant|intern|trainee)/.test(pos)) scorePosition = 3;\n\n// ── 2. COMPANY SIZE (0–25pts) ──\nconst sizeNum = parseInt((lead.company_size || '').toString().replace(/\\D/g, '')) || 0;\nlet scoreSize = 8;\nif (sizeNum >= 1000) scoreSize = 25;\nelse if (sizeNum >= 250) scoreSize = 22;\nelse if (sizeNum >= 100) scoreSize = 19;\nelse if (sizeNum >= 50) scoreSize = 16;\nelse if (sizeNum >= 20) scoreSize = 12;\nelse if (sizeNum >= 10) scoreSize = 8;\nelse if (sizeNum >= 1) scoreSize = 4;\n\n// ── 3. BEHAVIOR (0–30pts) ──\nconst beh = (lead.behavior || '').toLowerCase();\nlet scoreBehavior = 5;\nif (/\\b(price|pricing|how much|cost|quote|rates|plan)/.test(beh)) scoreBehavior = 30;\nelse if (/\\b(demo|presentation|trial|proof of concept|poc\\b)/.test(beh)) scoreBehavior = 28;\nelse if (/\\b(buy|purchase|order|contract|ready to|want to|sign up)/.test(beh)) scoreBehavior = 27;\nelse if (/\\b(offer|proposal|rfp|rfq|tender|bid)/.test(beh)) scoreBehavior = 25;\nelse if (/\\b(call|meeting|schedule|book|appointment|talk)/.test(beh)) scoreBehavior = 22;\nelse if (/\\b(download|whitepaper|ebook|case study|report|guide)/.test(beh)) scoreBehavior = 15;\nelse if (/\\b(contact|more info|question|inquiry|information)/.test(beh)) scoreBehavior = 12;\nelse if (/\\b(webinar|event|conference|summit)/.test(beh)) scoreBehavior = 10;\nelse if (/\\b(newsletter|subscribe|blog|article|visit)/.test(beh)) scoreBehavior = 5;\n\nif (lead.budget && lead.budget !== '') {\n  const budgetNum = parseInt((lead.budget || '').toString().replace(/[^0-9]/g, '')) || 0;\n  if (budgetNum >= 10000) scoreBehavior = Math.min(30, scoreBehavior + 5);\n}\n\n// ── 4. ICP MATCH (0–20pts) ──\nconst icpVal = lead.icp_match;\nlet scoreIcp = 10;\nif (icpVal === true || icpVal === 'true' || icpVal === 1 || icpVal === 'perfect') scoreIcp = 20;\nelse if (icpVal === false || icpVal === 'false' || icpVal === 0 || icpVal === 'no') scoreIcp = 0;\nelse if (/good|great|strong|fit/.test((lead.industry||'').toLowerCase())) scoreIcp = 16;\nelse if (/partial|maybe|possible/.test((lead.industry||'').toLowerCase())) scoreIcp = 10;\nelse if (/poor|weak|no fit/.test((lead.industry||'').toLowerCase())) scoreIcp = 3;\n\nconst total = Math.min(100, scorePosition + scoreSize + scoreBehavior + scoreIcp);\n\nlet category, emoji, priority, slaHours;\nif (total >= 75)      { category = 'HOT';  emoji = '🔥'; priority = 'High';   slaHours = 1;  }\nelse if (total >= 45) { category = 'WARM'; emoji = '🌤️'; priority = 'Medium'; slaHours = 24; }\nelse                  { category = 'COLD'; emoji = '❄️'; priority = 'Low';    slaHours = 168; }\n\nreturn {\n  ...lead,\n  score: total,\n  score_position:  scorePosition,\n  score_size:      scoreSize,\n  score_behavior:  scoreBehavior,\n  score_icp:       scoreIcp,\n  category, emoji, priority,\n  sla_hours: slaHours,\n  scored_at: new Date().toISOString()\n};"
+      },
+      "id": "2a3e0ff7-19b3-4d4b-be49-7cbb780f4f5c",
+      "name": "Rule-Based Scoring",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1600,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "search",
+        "base": {
+          "__rl": true,
+          "value": "YOUR_AIRTABLE_BASE_ID",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "name"
+        },
+        "filterByFormula": "=AND({Email}='{{ $json.email }}',{Company}='{{ $json.company }}')",
+        "options": {}
+      },
+      "id": "96ecbd56-6f78-48c3-9933-a21337ab5b0b",
+      "name": "Search records",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [
+        -1408,
+        128
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "YOUR_CREDENTIAL_ID",
+          "name": "Airtable Personal Access Token account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const scored = $('Rule-Based Scoring').first().json;\nconst airtableResult = $input.first().json;\n\nconst records = airtableResult.records || [];\nconst isDuplicate = records.length > 0;\n\nreturn { ...scored, is_duplicate: isDuplicate };"
+      },
+      "id": "492df383-ab45-4516-87b9-08e13939b615",
+      "name": "Flag Duplicate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1200,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.tavily.com/search",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer YOUR_TAVILY_API_KEY"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  query: $json.company + ' company revenue employees industry news 2025',\n  search_depth: 'basic',\n  include_answer: true,\n  include_raw_content: false,\n  max_results: 5\n}) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "e6d183d9-f10f-4fe1-8bb6-18f50e238661",
+      "name": "Tavily Search",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1008,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const flagged = $('Flag Duplicate').first().json;\nconst tavily = $input.first().json;\n\nconst tavilyAnswer = tavily?.answer || '';\nconst tavilyResults = tavily?.results?.slice(0, 3).map(r => r.title + ': ' + (r.content || '').substring(0, 200)).join('\\n') || '';\nconst tavilyInsights = tavilyAnswer || tavilyResults || 'No web data found';\n\nreturn { ...flagged, tavily_answer: tavilyAnswer, tavily_results: tavilyResults, tavily_insights: tavilyInsights };"
+      },
+      "id": "378a1302-98f9-4238-9a9b-242d97ca7e84",
+      "name": "Merge Tavily Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -800,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer YOUR_OPENAI_API_KEY"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  model: 'gpt-4o-mini',\n  temperature: 0.2,\n  max_tokens: 400,\n  messages: [\n    {\n      role: 'system',\n      content: 'You are a B2B sales expert. Respond ONLY in this exact format in English:\\nSTRENGTHS: [2-3 specific strengths, comma separated]\\nRISKS: [1-2 risks or missing info, comma separated]\\nACTION: [one specific sales action - what exactly to say or do, be concrete]\\nNOTE: [one sentence additional context or tip]'\n    },\n    {\n      role: 'user',\n      content: 'Analyze this B2B lead:\\nName: ' + $json.name + '\\nPosition: ' + $json.position + '\\nCompany: ' + $json.company + '\\nCompany size: ' + ($json.company_size || 'unknown') + ' employees\\nIndustry: ' + ($json.industry || 'unknown') + '\\nCountry: ' + ($json.country || 'unknown') + '\\nBehavior/Intent: ' + ($json.behavior || 'unknown') + '\\nSource: ' + $json.source + '\\nBudget: ' + ($json.budget || 'not specified') + '\\nWeb insights: ' + ($json.tavily_insights || 'no data available') + '\\nDuplicate lead: ' + ($json.is_duplicate ? 'YES - already in database' : 'No') + '\\nLead score: ' + $json.score + '/100 (' + $json.category + ')\\nScore breakdown: Position=' + $json.score_position + '/25, CompanySize=' + $json.score_size + '/25, Behavior=' + $json.score_behavior + '/30, ICP=' + $json.score_icp + '/20'\n    }\n  ]\n}) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "7f7ee969-3667-45b9-8b4d-a662ae28ef2d",
+      "name": "OpenAI Analysis",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -608,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const s = $('Merge Tavily Data').first().json;\nconst aiRaw = $input.first().json?.choices?.[0]?.message?.content || '';\n\nconst extract = (label, text) => {\n  const m = text.match(new RegExp(label + '[:\\\\s]+([^\\\\n]+)', 'i'));\n  return m ? m[1].trim() : '—';\n};\n\nconst strengths = extract('STRENGTHS', aiRaw);\nconst risks     = extract('RISKS', aiRaw);\nconst action    = extract('ACTION', aiRaw);\nconst note      = extract('NOTE', aiRaw);\n\nconst deadline = new Date();\ndeadline.setHours(deadline.getHours() + s.sla_hours);\n\nconst dupWarning = s.is_duplicate ? '\\n⚠️ *DUPLICATE* — this lead already exists in the database!' : '';\nconst tavilyShort = (s.tavily_answer || s.tavily_results || 'No data').substring(0, 400);\n\nconst report =\n`${s.emoji} LEAD SCORE: ${s.score}/100 — ${s.category}${dupWarning}\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nCONTACT\nName:      ${s.name}\nCompany:   ${s.company}\nPosition:  ${s.position}\nEmail:     ${s.email || '—'}\nPhone:     ${s.phone || '—'}\nCountry:   ${s.country}\nSource:    ${s.source}\n\nSCORE BREAKDOWN\nPosition/Authority:  ${s.score_position}/25\nCompany Size:        ${s.score_size}/25\nBehavior/Intent:     ${s.score_behavior}/30\nICP Match:           ${s.score_icp}/20\n────────────────────────────────\nTOTAL:               ${s.score}/100\n\n🔍 WEB INSIGHTS\n${tavilyShort}\n\nAI ANALYSIS\n✅ Strengths: ${strengths}\n⚠️  Risks:    ${risks}\n🎯 Action:   ${action}\n💡 Note:     ${note}\n\nPRIORITY: ${s.priority}\n⏰ Contact by: ${deadline.toUTCString()}\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;\n\nreturn {\n  ...s,\n  strengths,\n  risks,\n  recommended_action: action,\n  note,\n  tavily_answer: s.tavily_answer,\n  tavily_insights: s.tavily_insights,\n  contact_deadline: deadline.toISOString(),\n  report\n};"
+      },
+      "id": "9c7bd466-3bf2-4c54-910c-e112ef7cecad",
+      "name": "Build Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -400,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-hot-warm",
+              "leftValue": "={{ $json.category }}",
+              "rightValue": "COLD",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "932e9304-c7d8-42a7-80c5-3f685b904816",
+      "name": "HOT or WARM?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -208,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "#leads_global",
+          "mode": "name"
+        },
+        "text": "={{ $json.emoji }} *New {{ $json.category }} Lead — {{ $json.score }}/100*{{ $json.is_duplicate ? ' ⚠️ DUPLICATE' : '' }}\n\n*{{ $json.name }}* — {{ $json.position }} @ {{ $json.company }}\n📧 {{ $json.email || 'no email' }} | 📞 {{ $json.phone || 'no phone' }}\n🌍 {{ $json.country }} | 🌐 Source: {{ $json.source }}\n\n*Score:* {{ $json.score }}/100 | Position: {{ $json.score_position }}/25 | Size: {{ $json.score_size }}/25 | Intent: {{ $json.score_behavior }}/30 | ICP: {{ $json.score_icp }}/20\n\n🔍 *Web Insights:* {{ ($json.tavily_answer || 'No data').substring(0, 300) }}\n✅ *Strengths:* {{ $json.strengths }}\n⚠️ *Risks:* {{ $json.risks }}\n🎯 *Action:* {{ $json.recommended_action }}\n\n⏰ *Contact by:* {{ new Date($json.contact_deadline).toUTCString() }}",
+        "otherOptions": {
+          "mrkdwn": true
+        }
+      },
+      "id": "65bb82d6-1895-4f7c-a1a3-5b3bd234f9a4",
+      "name": "Slack Notification",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "4b7cc618-0f2c-48c7-9332-f8bdbac42fcc",
+      "credentials": {
+        "slackApi": {
+          "id": "YOUR_CREDENTIAL_ID",
+          "name": "Slack account 7"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": {
+          "__rl": true,
+          "value": "YOUR_AIRTABLE_BASE_ID",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "tblCWr9pqasvOzvJJ",
+          "mode": "id"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Registry Verified": "={{ $json.opencorp_found ? true : false }}",
+            "Duplicate": "={{ $json.is_duplicate ? true : false }}",
+            "Timestamp": "={{ $json.scored_at }}",
+            "Name": "={{ $json.name }}",
+            "Email": "={{ $json.email }}",
+            "Phone": "={{ $json.phone }}",
+            "Company": "={{ $json.company }}",
+            "Position": "={{ $json.position }}",
+            "Company Size": "={{ $json.company_size }}",
+            "Industry": "={{ $json.industry }}",
+            "Country": "={{ $json.country }}",
+            "Source": "={{ $json.source }}",
+            "Behavior": "={{ $json.behavior }}",
+            "Score": "={{ $json.score }}",
+            "Category": "={{ $json.category }}",
+            "Priority": "={{ $json.priority }}",
+            "Score Position": "={{ $json.score_position }}",
+            "Score Size": "={{ $json.score_size }}",
+            "Score Behavior": "={{ $json.score_behavior }}",
+            "Score ICP": "={{ $json.score_icp }}",
+            "Web Insights": "={{ $json.tavily_answer }}",
+            "Strengths": "={{ $json.strengths }}",
+            "Risks": "={{ $json.risks }}",
+            "Recommended Action": "={{ $json.recommended_action }}",
+            "Note": "={{ $json.note }}",
+            "Contact Deadline": "={{ new Date($json.contact_deadline).toISOString().split('T')[0] }}\n",
+            "Status": "New"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Timestamp",
+              "displayName": "Timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Name",
+              "displayName": "Name",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Email",
+              "displayName": "Email",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Phone",
+              "displayName": "Phone",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Company",
+              "displayName": "Company",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Position",
+              "displayName": "Position",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Company Size",
+              "displayName": "Company Size",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Industry",
+              "displayName": "Industry",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Country",
+              "displayName": "Country",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Source",
+              "displayName": "Source",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Behavior",
+              "displayName": "Behavior",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Registry Verified",
+              "displayName": "Registry Verified",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "boolean",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Score",
+              "displayName": "Score",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Category",
+              "displayName": "Category",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "options",
+              "options": [
+                {
+                  "name": "HOT",
+                  "value": "HOT"
+                },
+                {
+                  "name": "WARM",
+                  "value": "WARM"
+                },
+                {
+                  "name": "COLD",
+                  "value": "COLD"
+                }
+              ],
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Priority",
+              "displayName": "Priority",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "options",
+              "options": [
+                {
+                  "name": "High",
+                  "value": "High"
+                },
+                {
+                  "name": "Medium",
+                  "value": "Medium"
+                },
+                {
+                  "name": "Cold",
+                  "value": "Cold"
+                }
+              ],
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Score Position",
+              "displayName": "Score Position",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Score Size",
+              "displayName": "Score Size",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Score Behavior",
+              "displayName": "Score Behavior",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Score ICP",
+              "displayName": "Score ICP",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Web Insights",
+              "displayName": "Web Insights",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Strengths",
+              "displayName": "Strengths",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Risks",
+              "displayName": "Risks",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Recommended Action",
+              "displayName": "Recommended Action",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Note",
+              "displayName": "Note",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Contact Deadline",
+              "displayName": "Contact Deadline",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Duplicate",
+              "displayName": "Duplicate",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "boolean",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Status",
+              "displayName": "Status",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "options",
+              "options": [
+                {
+                  "name": "New",
+                  "value": "New"
+                },
+                {
+                  "name": "Contacted",
+                  "value": "Contacted"
+                },
+                {
+                  "name": "Qualified",
+                  "value": "Qualified"
+                },
+                {
+                  "name": "Lost",
+                  "value": "Lost"
+                }
+              ],
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Attachment Summary",
+              "displayName": "Attachment Summary",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {
+          "typecast": true
+        }
+      },
+      "id": "7fc3e4d7-5581-4602-a6b1-a650026adb6d",
+      "name": "Airtable — Create Record",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        240
+      ],
+      "alwaysOutputData": false,
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "YOUR_CREDENTIAL_ID",
+          "name": "Airtable Personal Access Token account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({\n  success: true,\n  lead: { name: $json.name, company: $json.company, email: $json.email },\n  score: $json.score,\n  category: $json.category,\n  priority: $json.priority,\n  is_duplicate: $json.is_duplicate,\n  recommended_action: $json.recommended_action,\n  contact_deadline: $json.contact_deadline,\n  web_insights: $json.tavily_answer || '',\n  score_breakdown: {\n    position: $json.score_position + '/25',\n    company_size: $json.score_size + '/25',\n    behavior: $json.score_behavior + '/30',\n    icp: $json.score_icp + '/20'\n  }\n}) }}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "id": "6accbd0c-f478-43f4-a9a5-6670f12a77e8",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        208,
+        128
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook — New Lead": {
+      "main": [
+        [
+          {
+            "node": "Normalize Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Input": {
+      "main": [
+        [
+          {
+            "node": "Rule-Based Scoring",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rule-Based Scoring": {
+      "main": [
+        [
+          {
+            "node": "Search records",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search records": {
+      "main": [
+        [
+          {
+            "node": "Flag Duplicate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Flag Duplicate": {
+      "main": [
+        [
+          {
+            "node": "Tavily Search",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tavily Search": {
+      "main": [
+        [
+          {
+            "node": "Merge Tavily Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Tavily Data": {
+      "main": [
+        [
+          {
+            "node": "OpenAI Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Analysis": {
+      "main": [
+        [
+          {
+            "node": "Build Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Report": {
+      "main": [
+        [
+          {
+            "node": "HOT or WARM?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HOT or WARM?": {
+      "main": [
+        [
+          {
+            "node": "Slack Notification",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Airtable — Create Record",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Airtable — Create Record",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "2f17377c-c297-4a79-8241-ec866941e47e",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "YOUR_INSTANCE_ID"
+  },
+  "id": "GgZPEU3DJYjBr8dp",
+  "tags": []
+}
